@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=CrossOver GTK
+Comment=Crosshair overlay for gaming
+Exec=crossover-gtk
+Icon=crossover-gtk
+Terminal=false
+Categories=Game;Utility;
+Keywords=crosshair;overlay;fps;gaming;
