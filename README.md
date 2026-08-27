@@ -1,6 +1,6 @@
 # CrossOver GTK
 
-A lightweight crosshair overlay for Linux (X11). Built with GTK3 and Cairo.
+A lightweight crosshair overlay for Linux (X11 + Wayland). Built with GTK3 and Cairo.
 
 Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crosshair overlay.
 
@@ -32,7 +32,7 @@ sudo dpkg -i crossover-gtk_1.0.0_all.deb
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
 # Optional Wayland support:
 sudo apt install gir1.2-gtklayershell-0.1
-git clone https://github.com/youruser/crossover-gtk.git
+git clone https://github.com/packerlschupfer/crossover-gtk.git
 cd crossover-gtk
 ./crossover.py
 ```
@@ -43,10 +43,23 @@ cd crossover-gtk
 sudo pacman -S python-gobject gtk3 libayatana-appindicator
 # Optional Wayland support:
 sudo pacman -S gtk-layer-shell
-git clone https://github.com/youruser/crossover-gtk.git
+git clone https://github.com/packerlschupfer/crossover-gtk.git
 cd crossover-gtk
 ./crossover.py
 ```
+
+### GNOME Wayland note
+
+GNOME does not show tray icons by default. Install the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) to get the system tray icon:
+
+```bash
+# Debian/Ubuntu/Bazzite
+sudo apt install gnome-shell-extension-appindicator
+# Fedora
+sudo dnf install gnome-extensions-app gnome-shell-extension-appindicator
+```
+
+Then enable it in GNOME Extensions and log out/in.
 
 ## Usage
 

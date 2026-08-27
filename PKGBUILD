@@ -4,7 +4,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Lightweight crosshair overlay for Linux gaming"
 arch=('any')
-url="https://github.com/youruser/crossover-gtk"
+url="https://github.com/packerlschupfer/crossover-gtk"
 license=('GPL-3.0-or-later')
 depends=(
     'python'

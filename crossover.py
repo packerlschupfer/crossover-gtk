@@ -442,15 +442,22 @@ class CrosshairWindow(Gtk.Window):
         self.show_all()
 
     def _setup_x11(self):
-        """Configure window for X11."""
+        """Configure window for X11 or GNOME Wayland fallback."""
         self.set_decorated(False)
         self.set_resizable(False)
-        self.set_keep_above(True)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_app_paintable(True)
-        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        if not IS_WAYLAND:
+            self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.set_keep_above(True)
         self.stick()
+        self.connect('map-event', self._on_map_reapply_above)
+
+    def _on_map_reapply_above(self, widget, event):
+        """Re-apply keep-above after window is mapped (needed on some Wayland compositors)."""
+        self.set_keep_above(True)
+        return False
 
     def _setup_wayland(self):
         """Configure window for Wayland using gtk-layer-shell."""
