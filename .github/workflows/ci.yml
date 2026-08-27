@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    name: Syntax & import check
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi \
+            python3-gi-cairo \
+            gir1.2-gtk-3.0 \
+            gir1.2-ayatanaappindicator3-0.1 \
+            desktop-file-utils
+
+      - name: Syntax check
+        run: |
+          python3 -m py_compile crossover.py
+          echo "Syntax OK"
+
+      - name: Import check (no display needed)
+        run: |
+          python3 -c "
+          import gi
+          gi.require_version('Gtk', '3.0')
+          gi.require_version('Gdk', '3.0')
+          gi.require_version('GdkPixbuf', '2.0')
+          from gi.repository import Gtk, Gdk, GLib, GdkPixbuf
+          import cairo
+          print('GTK3 imports OK')
+          "
+
+      - name: Version check
+        run: python3 crossover.py --version
+
+      - name: Validate desktop entry
+        run: desktop-file-validate crossover-gtk.desktop
+
+      - name: Icon renders
+        run: |
+          python3 -c "
+          import gi
+          gi.require_version('GdkPixbuf', '2.0')
+          from gi.repository import GdkPixbuf
+          pb = GdkPixbuf.Pixbuf.new_from_file_at_size('data/crossover-gtk.svg', 256, 256)
+          assert (pb.get_width(), pb.get_height()) == (256, 256)
+          print('Icon renders OK')
+          "

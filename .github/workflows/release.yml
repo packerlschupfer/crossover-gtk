@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    name: Build .deb package
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            fakeroot \
+            python3-pil
+
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Tag matches VERSION in crossover.py
+        run: |
+          APP_VER=$(python3 -c "
+          import re
+          print(re.search(r\"^VERSION = '([^']+)'\", open('crossover.py').read(), re.M).group(1))
+          ")
+          echo "tag=$VERSION  crossover.py=$APP_VER"
+          test "$VERSION" = "$APP_VER"
+
+      - name: Build .deb
+        run: |
+          set -e
+          PKG=crossover-gtk
+          ARCH=all
+          DIR="${PKG}_${VERSION}_${ARCH}"
+
+          mkdir -p "${DIR}/DEBIAN"
+
+          install -Dm755 crossover.py "${DIR}/usr/share/${PKG}/crossover.py"
+
+          install -d "${DIR}/usr/bin"
+          cat > "${DIR}/usr/bin/crossover-gtk" << 'SCRIPT'
+          #!/bin/sh
+          exec python3 /usr/share/crossover-gtk/crossover.py "$@"
+          SCRIPT
+          chmod 755 "${DIR}/usr/bin/crossover-gtk"
+
+          install -Dm644 crossover-gtk.desktop \
+            "${DIR}/usr/share/applications/${PKG}.desktop"
+
+          # Icons: the vector original plus rasterised hicolor sizes
+          install -Dm644 data/crossover-gtk.svg \
+            "${DIR}/usr/share/icons/hicolor/scalable/apps/${PKG}.svg"
+          for sz in 48 128 256; do
+            install -d "${DIR}/usr/share/icons/hicolor/${sz}x${sz}/apps"
+            python3 -c "
+          from PIL import Image
+          src = Image.open('data/crossover-gtk.png')
+          src.resize((${sz}, ${sz}), Image.LANCZOS).save('${DIR}/usr/share/icons/hicolor/${sz}x${sz}/apps/${PKG}.png')
+          "
+          done
+
+          install -Dm644 README.md "${DIR}/usr/share/doc/${PKG}/README.md"
+          install -Dm644 LICENSE "${DIR}/usr/share/doc/${PKG}/copyright"
+
+          cat > "${DIR}/DEBIAN/control" << EOF
+          Package: ${PKG}
+          Version: ${VERSION}
+          Section: games
+          Priority: optional
+          Architecture: ${ARCH}
+          Depends: python3, python3-gi, python3-gi-cairo, gir1.2-gtk-3.0
+          Recommends: gir1.2-ayatanaappindicator3-0.1
+          Suggests: gir1.2-gtklayershell-0.1
+          Maintainer: packerlschupfer
+          Description: Crosshair overlay for Linux gaming
+           A lightweight, transparent, always-on-top crosshair overlay
+           for FPS games. Built with GTK3 and Cairo. Supports X11 and Wayland.
+          EOF
+
+          fakeroot dpkg-deb --build --root-owner-group "${DIR}"
+          dpkg-deb -c "${DIR}.deb"
+
+      - name: Stash .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: "*.deb"
+
+  build-tarball:
+    name: Build tarball
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build tarball
+        run: |
+          DIR="crossover-gtk-${VERSION}"
+          mkdir -p "$DIR"
+          cp -r crossover.py crossover-gtk.desktop data/ PKGBUILD README.md LICENSE "$DIR/"
+          tar czf "${DIR}.tar.gz" "$DIR"
+
+      - name: Stash tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: "*.tar.gz"
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    needs: [build-deb, build-tarball]
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum *.deb *.tar.gz | tee sha256sums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.deb
+            *.tar.gz
+            sha256sums.txt
+          generate_release_notes: true

@@ -43,8 +43,12 @@ Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crossha
 
 ### From .deb package
 
+Download the latest `.deb` from the
+[Releases page](https://github.com/packerlschupfer/crossover-gtk/releases/latest):
+
 ```bash
-sudo dpkg -i crossover-gtk_1.0.1_all.deb
+sudo dpkg -i crossover-gtk_*_all.deb
+sudo apt-get install -f      # if any dependency is missing
 ```
 
 ### Manual (Debian/Ubuntu)
