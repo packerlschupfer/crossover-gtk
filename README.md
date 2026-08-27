@@ -4,10 +4,31 @@ A lightweight crosshair overlay for Linux (X11 + Wayland). Built with GTK3 and C
 
 Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crosshair overlay.
 
+<p align="center">
+  <img src="screenshots/overlay-unlocked.png" alt="Overlay window (unlocked)" height="160">
+  &nbsp;&nbsp;
+  <img src="screenshots/overlay-locked.png" alt="Overlay (locked — click-through)" height="160">
+  &nbsp;&nbsp;
+  <img src="screenshots/tray-menu.png" alt="Tray menu" height="320">
+</p>
+
+### Crosshair styles
+
+<p align="center">
+  <img src="screenshots/styles.png" alt="Available crosshair styles">
+</p>
+
+### Color presets
+
+<p align="center">
+  <img src="screenshots/colors.png" alt="Color presets">
+</p>
+
 ## Features
 
 - Transparent, always-on-top, click-through overlay
-- Multiple crosshair styles: cross, pixel (1x1 to 4x4), circle, square, and combinations
+- Multiple crosshair styles: cross, pixel (1x1 to 5x5), circle, square, and combinations
+- Modular: combine dot, cross, circle, square independently
 - Custom crosshair images (PNG/SVG)
 - Per-game position profiles
 - Configurable color, opacity, size, thickness, gap
@@ -16,7 +37,7 @@ Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crossha
 - Numpad-based pixel-precise positioning (1px and 10px steps)
 - Autostart on boot
 - Wayland support via gtk-layer-shell (X11 + Wayland)
-- Zero dependencies beyond GTK3
+- ~5 MB RAM, 0% CPU
 
 ## Install
 
