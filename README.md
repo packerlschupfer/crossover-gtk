@@ -36,7 +36,7 @@ Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crossha
 - GNOME keyboard shortcuts for all actions
 - Numpad-based pixel-precise positioning (1px and 10px steps)
 - Autostart on boot
-- Wayland support via gtk-layer-shell (X11 + Wayland)
+- Wayland support via gtk-layer-shell, with an XWayland fallback on GNOME
 - ~5 MB RAM, 0% CPU
 
 ## Install
@@ -74,6 +74,13 @@ cd crossover-gtk
 ```
 
 ### GNOME Wayland note
+
+On GNOME the overlay runs on **XWayland**. GNOME's compositor implements neither
+layer-shell nor always-on-top for Wayland windows, so a native Wayland overlay
+disappears behind whatever you Alt+Tab to; XWayland honours `_NET_WM_STATE_ABOVE`,
+and it also restores exact positioning and drag-to-move. This is automatic — set
+`CROSSOVER_NO_XWAYLAND=1` to force a native Wayland window instead. Compositors
+that do support layer-shell (wlroots, KWin) keep using it.
 
 GNOME does not show tray icons by default. Install the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) to get the system tray icon:
 

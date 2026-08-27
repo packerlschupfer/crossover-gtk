@@ -34,6 +34,27 @@ import stat
 import subprocess
 import sys
 
+# Detect display backend (before importing Gtk — GDK picks its backend then)
+IS_WAYLAND = os.environ.get('XDG_SESSION_TYPE') == 'wayland' or 'WAYLAND_DISPLAY' in os.environ
+
+
+def _force_xwayland():
+    """GNOME's compositor has neither always-on-top nor layer-shell, so a native
+    Wayland overlay sinks behind whatever you Alt+Tab to. XWayland honours
+    _NET_WM_STATE_ABOVE, so run there instead — that also restores exact
+    positioning and drag-to-move. Compositors with layer-shell (wlroots, KWin)
+    are left alone; set CROSSOVER_NO_XWAYLAND=1 to opt out."""
+    if not IS_WAYLAND or os.environ.get('CROSSOVER_NO_XWAYLAND'):
+        return False
+    if 'GNOME' not in os.environ.get('XDG_CURRENT_DESKTOP', '').upper():
+        return False
+    return 'DISPLAY' in os.environ      # no XWayland running -> stay on Wayland
+
+
+USING_XWAYLAND = _force_xwayland()
+if USING_XWAYLAND:
+    os.environ['GDK_BACKEND'] = 'x11'
+
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
@@ -65,9 +86,6 @@ def _load_layer_shell():
     except (ValueError, ImportError):
         HAS_LAYER_SHELL = False
 
-# Detect display backend
-IS_WAYLAND = os.environ.get('XDG_SESSION_TYPE') == 'wayland' or 'WAYLAND_DISPLAY' in os.environ
-
 # Layer shell support checked lazily (needs GTK init, triggers warnings)
 _layer_shell_checked = None
 
@@ -92,7 +110,7 @@ def layer_shell_supported():
                 os.close(devnull)
     return _layer_shell_checked
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 CONFIG_DIR = os.path.expanduser('~/.config/crossover-gtk')
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
@@ -1191,10 +1209,21 @@ class CrosshairApp:
         self.tray = TrayIcon(self)
         self.fifo = FifoListener(self.handle_command)
 
-        backend = 'layer-shell' if layer_shell_supported() else ('Wayland/GTK' if IS_WAYLAND else 'X11')
+        if layer_shell_supported():
+            backend = 'layer-shell'
+        elif USING_XWAYLAND:
+            backend = 'XWayland'
+        elif IS_WAYLAND:
+            backend = 'Wayland/GTK'
+        else:
+            backend = 'X11'
         print(f'CrossOver GTK {VERSION} ({backend})')
-        if IS_WAYLAND and not layer_shell_supported():
-            print('  Note: layer-shell not supported (GNOME). Using GTK fallback.')
+        if USING_XWAYLAND:
+            print('  Note: GNOME has no layer-shell and ignores always-on-top for')
+            print('  Wayland windows, so the overlay runs on XWayland instead.')
+            print('  Set CROSSOVER_NO_XWAYLAND=1 to force a native Wayland window.')
+        elif IS_WAYLAND and not layer_shell_supported():
+            print('  Note: layer-shell not supported. Using GTK fallback.')
             print('  Positioning: use numpad nudge keys (drag not available).')
         print('  Ctrl+Shift+Alt+X             lock/unlock')
         print('  Ctrl+Shift+Alt+H             hide/show')
