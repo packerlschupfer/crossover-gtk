@@ -92,7 +92,7 @@ def layer_shell_supported():
                 os.close(devnull)
     return _layer_shell_checked
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 
 CONFIG_DIR = os.path.expanduser('~/.config/crossover-gtk')
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
