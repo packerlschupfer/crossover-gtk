@@ -1,6 +1,6 @@
 # Maintainer: packerlschupfer
 pkgname=crossover-gtk
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Lightweight crosshair overlay for Linux gaming"
 arch=('any')
@@ -27,6 +27,7 @@ package() {
 exec python3 /usr/share/$pkgname/crossover.py "\$@"
 EOF
     install -Dm644 crossover-gtk.desktop "$pkgdir/usr/share/applications/crossover-gtk.desktop"
+    install -Dm644 data/crossover-gtk.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/crossover-gtk.svg"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

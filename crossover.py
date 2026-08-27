@@ -101,6 +101,12 @@ AUTOSTART_DIR = os.path.expanduser('~/.config/autostart')
 AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, 'crossover-gtk.desktop')
 SCRIPT_PATH = os.path.realpath(__file__)
 
+APP_ID = 'crossover-gtk'
+ICON_FILES = [
+    os.path.join(os.path.dirname(SCRIPT_PATH), 'data', 'crossover-gtk.png'),
+    '/usr/share/icons/hicolor/48x48/apps/crossover-gtk.png',
+]
+
 CROSSHAIR_IMAGE_DIRS = [
     os.path.join(CONFIG_DIR, 'crosshairs'),
     os.path.expanduser('~/git/crossover/src/static/crosshairs'),
@@ -359,6 +365,29 @@ def find_crosshair_images():
                     images.append(os.path.join(root, f))
     images.sort()
     return images
+
+
+def set_app_icon():
+    """Give our windows a real icon instead of the generic fallback.
+
+    On Wayland the icon comes from the app-id -> .desktop file lookup, and GTK
+    takes the app-id from the program name — which is 'python3' when the script
+    is run directly. On X11 the window icon is set explicitly.
+    """
+    GLib.set_prgname(APP_ID)
+    Gdk.set_program_class('CrossOver')
+
+    if Gtk.IconTheme.get_default().has_icon(APP_ID):
+        Gtk.Window.set_default_icon_name(APP_ID)
+        return
+    for path in ICON_FILES:
+        if os.path.exists(path):
+            try:
+                Gtk.Window.set_default_icon_from_file(path)
+                return
+            except GLib.Error:
+                pass
+    Gtk.Window.set_default_icon_from_file(create_tray_icon_pixbuf(64))
 
 
 def create_tray_icon_pixbuf(size=22):
@@ -1155,6 +1184,7 @@ class CrosshairApp:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         setup_fifo()
+        set_app_icon()
         self.window = CrosshairWindow(self.config)
         self.window.connect('destroy', self._on_quit)
 
