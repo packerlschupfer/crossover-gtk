@@ -26,6 +26,7 @@ Keyboard shortcuts (after --install-keys):
 """
 
 import cairo
+import errno
 import json
 import math
 import os
@@ -130,6 +131,10 @@ CROSSHAIR_IMAGE_DIRS = [
     os.path.expanduser('~/git/crossover/src/static/crosshairs'),
 ]
 
+# The overlay window is a fixed square; it grows past this only when a large
+# crosshair would otherwise be clipped by its own window (see _sync_window_size).
+BASE_WINDOW_SIZE = 101
+
 DEFAULT_CONFIG = {
     'color': [0.0, 1.0, 0.0, 1.0],
     'outline_color': [0.0, 0.0, 0.0, 0.5],
@@ -142,7 +147,7 @@ DEFAULT_CONFIG = {
     'shape': 'cross',
     'image_path': None,
     'image_size': 40,
-    'window_size': 101,
+    'window_size': BASE_WINDOW_SIZE,
     'position_x': None,
     'position_y': None,
     'opacity': 1.0,
@@ -187,14 +192,80 @@ GNOME_KEYBIND_SCHEMA = 'org.gnome.settings-daemon.plugins.media-keys'
 
 # ── Config ──────────────────────────────────────────────────────────
 
+def _validate_config(config):
+    """Coerce a hand-edited or outdated config back into usable types.
+
+    Every value reaches Cairo eventually, so a stray string here is a crash in
+    the draw handler rather than a visible error.
+    """
+    for key in ('color', 'outline_color'):
+        v = config.get(key)
+        if (isinstance(v, (list, tuple)) and len(v) == 4
+                and all(isinstance(c, (int, float)) for c in v)):
+            config[key] = [min(1.0, max(0.0, float(c))) for c in v]
+        else:
+            config[key] = list(DEFAULT_CONFIG[key])
+
+    for key in ('size', 'thickness', 'gap', 'dot_size', 'image_size', 'window_size'):
+        try:
+            config[key] = int(config[key])
+        except (TypeError, ValueError):
+            config[key] = DEFAULT_CONFIG[key]
+
+    for key in ('outline', 'dot', 'autostart'):
+        config[key] = bool(config.get(key))
+
+    try:
+        config['opacity'] = min(1.0, max(0.1, float(config['opacity'])))
+    except (TypeError, ValueError):
+        config['opacity'] = DEFAULT_CONFIG['opacity']
+
+    if config.get('shape') not in SHAPES:
+        config['shape'] = DEFAULT_CONFIG['shape']
+
+    for key in ('position_x', 'position_y'):
+        if config.get(key) is not None:
+            try:
+                config[key] = int(config[key])
+            except (TypeError, ValueError):
+                config[key] = None
+
+    if not isinstance(config.get('image_path'), str):
+        config['image_path'] = None
+
+    profiles = config.get('profiles')
+    if not isinstance(profiles, dict):
+        profiles = {}
+    clean = {}
+    for name, p in profiles.items():
+        if not isinstance(p, dict):
+            continue
+        try:
+            clean[str(name)] = {'position_x': int(p['position_x']),
+                                'position_y': int(p['position_y'])}
+        except (KeyError, TypeError, ValueError):
+            continue
+    config['profiles'] = clean
+    if config.get('active_profile') not in clean:
+        config['active_profile'] = None
+
+    return config
+
+
 def load_config():
     config = dict(DEFAULT_CONFIG)
     try:
         with open(CONFIG_FILE) as f:
-            config.update(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    return config
+            loaded = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        loaded = {}
+    if isinstance(loaded, dict):
+        # Pre-0.1 configs called it 'style'
+        if 'style' in loaded and 'shape' not in loaded:
+            loaded['shape'] = loaded.pop('style')
+        loaded.pop('style', None)
+        config.update(loaded)
+    return _validate_config(config)
 
 
 def save_config(config):
@@ -205,14 +276,38 @@ def save_config(config):
 
 # ── FIFO control ────────────────────────────────────────────────────
 
+def _not_running(detail):
+    print(f'CrossOver is not running ({detail}).')
+    sys.exit(1)
+
+
 def send_command(cmd):
-    """Send a command to the running instance via FIFO."""
+    """Send a command to the running instance via FIFO.
+
+    Opened non-blocking: a plain open() on a FIFO with no reader blocks forever,
+    which would wedge every keyboard shortcut after a stale FIFO is left behind.
+    """
     try:
-        with open(FIFO_PATH, 'w') as f:
-            f.write(cmd + '\n')
-    except (FileNotFoundError, BrokenPipeError):
-        print(f'CrossOver is not running (no FIFO at {FIFO_PATH})')
-        sys.exit(1)
+        if not stat.S_ISFIFO(os.stat(FIFO_PATH).st_mode):
+            _not_running(f'{FIFO_PATH} is not a FIFO')
+        fd = os.open(FIFO_PATH, os.O_WRONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        _not_running(f'no FIFO at {FIFO_PATH}')
+    except OSError as e:
+        if e.errno != errno.ENXIO:
+            raise
+        # FIFO exists but nobody is reading it — a leftover from a crashed run.
+        try:
+            os.unlink(FIFO_PATH)
+        except OSError:
+            pass
+        _not_running('stale control FIFO removed')
+    try:
+        os.write(fd, (cmd + '\n').encode())
+    except BrokenPipeError:
+        _not_running('the instance exited')
+    finally:
+        os.close(fd)
 
 
 def setup_fifo():
@@ -257,10 +352,12 @@ class FifoListener:
         return True
 
     def cleanup(self):
-        if self.source_id:
+        if self.source_id is not None:
             GLib.source_remove(self.source_id)
+            self.source_id = None
         if self.fd is not None:
             os.close(self.fd)
+            self.fd = None
         try:
             os.unlink(FIFO_PATH)
         except FileNotFoundError:
@@ -271,17 +368,9 @@ class FifoListener:
 
 def install_gnome_shortcuts():
     """Register custom keyboard shortcuts in GNOME."""
-    # Get existing custom keybindings
-    result = subprocess.run(
-        ['gsettings', 'get', GNOME_KEYBIND_SCHEMA, 'custom-keybindings'],
-        capture_output=True, text=True
-    )
-    existing = result.stdout.strip()
-
-    # Remove any existing CrossOver shortcuts first
+    # Remove any existing CrossOver shortcuts first, then read what is left
     uninstall_gnome_shortcuts(quiet=True)
 
-    # Re-read after cleanup
     result = subprocess.run(
         ['gsettings', 'get', GNOME_KEYBIND_SCHEMA, 'custom-keybindings'],
         capture_output=True, text=True
@@ -405,10 +494,10 @@ def set_app_icon():
                 return
             except GLib.Error:
                 pass
-    Gtk.Window.set_default_icon_from_file(create_tray_icon_pixbuf(64))
+    Gtk.Window.set_default_icon_from_file(create_tray_icon_file(64))
 
 
-def create_tray_icon_pixbuf(size=22):
+def create_tray_icon_file(size=22):
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
     cr = cairo.Context(surface)
     cr.set_source_rgba(0, 0, 0, 0)
@@ -455,8 +544,10 @@ class CrosshairWindow(Gtk.Window):
         else:
             self._setup_x11()
 
+        resized = self._sync_window_size(apply=False)
         ws = config['window_size']
         self.set_default_size(ws, ws)
+        self.set_size_request(ws, ws)
 
         screen = self.get_screen()
         visual = screen.get_rgba_visual()
@@ -487,6 +578,11 @@ class CrosshairWindow(Gtk.Window):
             self.center_on_screen()
 
         self.show_all()
+
+        if resized:
+            # Persist the new size and the matching origin, so the next start
+            # sees them already reconciled and does not shift the window again.
+            save_config(self.config)
 
     def _setup_x11(self):
         """Configure window for X11 or GNOME Wayland fallback."""
@@ -550,6 +646,68 @@ class CrosshairWindow(Gtk.Window):
                 print(f'Failed to load image {path}: {e}')
                 self.custom_image_pixbuf = None
 
+    def _move_to(self, x, y):
+        """Move the window, whichever positioning mechanism this backend uses."""
+        if self.use_layer_shell:
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, x)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, y)
+        else:
+            self.move(x, y)
+
+    def _current_position(self):
+        """Window origin. get_position() is meaningless under layer-shell, so
+        there the config is the only record of where we put ourselves."""
+        if self.use_layer_shell:
+            return (self.config.get('position_x') or 0,
+                    self.config.get('position_y') or 0)
+        return tuple(self.get_position())
+
+    def _crosshair_extent(self):
+        """Half-width in px of the drawn crosshair, outline and line caps included."""
+        cfg = self.config
+        shape = cfg['shape']
+        if shape == 'image':
+            # With no loadable image the draw falls through to the centre dot,
+            # so the window still has to be big enough for it.
+            reach = cfg['image_size'] // 2 + 1
+            if cfg['dot']:
+                reach = max(reach, cfg['dot_size'] + 2)
+            return reach
+        if shape.startswith('pixel'):
+            px = int(shape.split()[1].split('x')[0])
+            return px + 2
+        line_width = cfg['thickness'] + (2 if cfg['outline'] else 0)
+        ext = cfg['size']
+        if 'cross' in shape and ('circle' in shape or 'square' in shape):
+            ext += 4                      # matches the arm length in _draw_crosshair
+        reach = ext + line_width          # LINE_CAP_SQUARE overshoots by lw/2
+        if cfg['dot']:
+            reach = max(reach, cfg['dot_size'] + 1 + line_width)
+        return reach
+
+    def _sync_window_size(self, apply=True):
+        """Grow the window when the crosshair would outgrow it.
+
+        window_size is fixed at BASE_WINDOW_SIZE for ordinary crosshairs; a
+        50px cross needs 107 and was previously drawn clipped. The origin moves
+        by half the growth so the crosshair centre stays on the same pixel.
+        """
+        ws = max(BASE_WINDOW_SIZE, 2 * self._crosshair_extent() + 1)
+        old = self.config.get('window_size') or BASE_WINDOW_SIZE
+        if ws == old:
+            return False
+        delta = (ws - old) // 2
+        self.config['window_size'] = ws
+        if self.config.get('position_x') is not None:
+            self.config['position_x'] -= delta
+            self.config['position_y'] -= delta
+        if apply:
+            self.set_size_request(ws, ws)
+            self.resize(ws, ws)
+            if self.config.get('position_x') is not None:
+                self._move_to(self.config['position_x'], self.config['position_y'])
+        return True
+
     def center_on_screen(self):
         display = Gdk.Display.get_default()
         if self.use_layer_shell:
@@ -564,28 +722,17 @@ class CrosshairWindow(Gtk.Window):
         ws = alloc.width if alloc.width > 1 else self.config['window_size']
         cx = geom.x + (geom.width // 2) - (ws // 2)
         cy = geom.y + (geom.height // 2) - (ws // 2)
-        if self.use_layer_shell:
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, cx)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, cy)
-        else:
-            self.move(cx, cy)
+        self._move_to(cx, cy)
         self.config['position_x'] = cx
         self.config['position_y'] = cy
         save_config(self.config)
 
     def nudge(self, dx, dy):
-        if self.use_layer_shell:
-            px = (self.config.get('position_x') or 0) + dx
-            py = (self.config.get('position_y') or 0) + dy
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, px)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, py)
-            self.config['position_x'] = px
-            self.config['position_y'] = py
-            save_config(self.config)
-        else:
-            pos = self.get_position()
-            self.move(pos[0] + dx, pos[1] + dy)
-            self.save_position()
+        x, y = self._current_position()
+        self._move_to(x + dx, y + dy)
+        self.config['position_x'] = x + dx
+        self.config['position_y'] = y + dy
+        save_config(self.config)
 
     def on_draw(self, widget, cr):
         cr.set_operator(cairo.OPERATOR_SOURCE)
@@ -635,7 +782,7 @@ class CrosshairWindow(Gtk.Window):
 
     def _draw_crosshair(self, cr, cx, cy):
         cfg = self.config
-        shape = cfg.get('shape', cfg.get('style', 'cross'))  # compat with old 'style' key
+        shape = cfg['shape']
 
         # Image mode
         if shape == 'image' and self.custom_image_pixbuf:
@@ -652,12 +799,12 @@ class CrosshairWindow(Gtk.Window):
             px = int(parts[1].split('x')[0]) if len(parts) > 1 else 1
             ix = int(cx)
             iy = int(cy)
+            half = (px - 1) // 2
             if cfg['outline']:
                 cr.set_source_rgba(*cfg['outline_color'])
-                cr.rectangle(ix - px, iy - px, px * 2 + 1, px * 2 + 1)
+                cr.rectangle(ix - half - 1, iy - half - 1, px + 2, px + 2)
                 cr.fill()
             cr.set_source_rgba(*cfg['color'])
-            half = (px - 1) // 2
             cr.rectangle(ix - half, iy - half, px, px)
             cr.fill()
             return
@@ -728,21 +875,25 @@ class CrosshairWindow(Gtk.Window):
         self.config['shape'] = shape
         if shape == 'image':
             self._load_custom_image()
+        self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
 
     def set_dot(self, enabled):
         self.config['dot'] = enabled
+        self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
 
     def set_size(self, size):
         self.config['size'] = max(2, min(100, size))
+        self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
 
     def set_thickness(self, thickness):
         self.config['thickness'] = max(1, min(10, thickness))
+        self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
 
@@ -763,22 +914,23 @@ class CrosshairWindow(Gtk.Window):
 
     def set_image(self, path):
         self.config['image_path'] = path
-        self.config['style'] = 'image'
+        self.config['shape'] = 'image'
         self._load_custom_image()
+        self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
 
     def save_position(self):
-        pos = self.get_position()
-        self.config['position_x'] = pos[0]
-        self.config['position_y'] = pos[1]
+        x, y = self._current_position()
+        self.config['position_x'] = x
+        self.config['position_y'] = y
         save_config(self.config)
 
     def save_profile(self, name):
-        pos = self.get_position()
+        x, y = self._current_position()
         self.config.setdefault('profiles', {})[name] = {
-            'position_x': pos[0],
-            'position_y': pos[1],
+            'position_x': x,
+            'position_y': y,
         }
         self.config['active_profile'] = name
         save_config(self.config)
@@ -790,11 +942,7 @@ class CrosshairWindow(Gtk.Window):
             self.config['position_x'] = p['position_x']
             self.config['position_y'] = p['position_y']
             self.config['active_profile'] = name
-            if self.use_layer_shell:
-                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, p['position_x'])
-                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, p['position_y'])
-            else:
-                self.move(p['position_x'], p['position_y'])
+            self._move_to(p['position_x'], p['position_y'])
             save_config(self.config)
 
     def delete_profile(self, name):
@@ -838,7 +986,7 @@ class TrayIcon:
             print('Tray icon not available (install gir1.2-ayatanaappindicator3-0.1)')
             return
 
-        icon_path = create_tray_icon_pixbuf()
+        icon_path = create_tray_icon_file()
         self.indicator = AppIndicator.Indicator.new(
             'crossover-gtk',
             icon_path,
@@ -865,7 +1013,7 @@ class TrayIcon:
         menu.append(Gtk.SeparatorMenuItem())
 
         # Shape
-        current_shape = self.app.config.get('shape', self.app.config.get('style', 'cross'))
+        current_shape = self.app.config['shape']
         shape_item = Gtk.MenuItem(label='Shape')
         shape_menu = Gtk.Menu()
         for shape in SHAPES:
@@ -1052,6 +1200,8 @@ class TrayIcon:
 
     def _on_show_help(self, widget):
         dialog = Gtk.MessageDialog(
+            transient_for=self.app.window,
+            modal=True,
             message_type=Gtk.MessageType.INFO,
             buttons=Gtk.ButtonsType.OK,
             text='CrossOver GTK - Keyboard Shortcuts',
@@ -1087,7 +1237,8 @@ class TrayIcon:
         self.app.window.set_color(rgba)
 
     def _on_custom_color(self, widget):
-        dialog = Gtk.ColorChooserDialog(title='Choose Crosshair Color')
+        dialog = Gtk.ColorChooserDialog(title='Choose Crosshair Color',
+                                        transient_for=self.app.window, modal=True)
         current = self.app.config['color']
         dialog.set_rgba(Gdk.RGBA(*current))
         dialog.set_use_alpha(True)
@@ -1099,6 +1250,8 @@ class TrayIcon:
     def _on_choose_image(self, widget):
         dialog = Gtk.FileChooserDialog(
             title='Choose Crosshair Image',
+            transient_for=self.app.window,
+            modal=True,
             action=Gtk.FileChooserAction.OPEN,
         )
         dialog.add_buttons(
@@ -1122,7 +1275,8 @@ class TrayIcon:
         self.indicator.set_menu(self._build_menu())
 
     def _on_save_profile(self, widget):
-        dialog = Gtk.Dialog(title='Save Profile', flags=0)
+        dialog = Gtk.Dialog(title='Save Profile',
+                            transient_for=self.app.window, modal=True)
         dialog.add_buttons(
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             Gtk.STOCK_SAVE, Gtk.ResponseType.OK,
@@ -1188,8 +1342,13 @@ class CrosshairApp:
             handler(self)
 
     def run(self):
-        # Check if already running
-        if os.path.exists(FIFO_PATH):
+        # Check if already running. A live instance holds the FIFO open for
+        # reading, so O_WRONLY succeeds; ENXIO means the file is a leftover.
+        try:
+            is_fifo = stat.S_ISFIFO(os.stat(FIFO_PATH).st_mode)
+        except OSError:
+            is_fifo = False
+        if is_fifo:
             try:
                 fd = os.open(FIFO_PATH, os.O_WRONLY | os.O_NONBLOCK)
                 os.close(fd)
@@ -1197,9 +1356,10 @@ class CrosshairApp:
                 print('Use tray icon menu or send commands: python3 crossover.py lock')
                 sys.exit(0)
             except OSError:
-                pass  # FIFO exists but no reader — stale, we can take over
+                pass  # stale, we can take over
 
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, self._on_signal)
 
         setup_fifo()
         set_app_icon()
@@ -1234,12 +1394,26 @@ class CrosshairApp:
         print()
         print('Run with --install-keys to register GNOME shortcuts.')
 
-        Gtk.main()
+        try:
+            Gtk.main()
+        finally:
+            self.cleanup()
+
+    def _on_signal(self):
+        Gtk.main_quit()
+        return GLib.SOURCE_REMOVE
 
     def _on_quit(self, *args):
+        Gtk.main_quit()
+
+    def cleanup(self):
+        """Remove the control FIFO. Reached from every exit path — the tray's
+        Quit and the 'quit' command call Gtk.main_quit() without ever destroying
+        the window, so hanging this off the window's destroy signal missed both
+        and left a FIFO that made the next `crossover.py lock` block forever."""
         if self.fifo:
             self.fifo.cleanup()
-        Gtk.main_quit()
+            self.fifo = None
 
 
 # ── Main ────────────────────────────────────────────────────────────
