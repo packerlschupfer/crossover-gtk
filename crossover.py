@@ -128,7 +128,8 @@ ICON_FILES = [
 
 CROSSHAIR_IMAGE_DIRS = [
     os.path.join(CONFIG_DIR, 'crosshairs'),
-    os.path.expanduser('~/git/crossover/src/static/crosshairs'),
+    os.path.join(os.path.dirname(SCRIPT_PATH), 'crosshairs'),
+    '/usr/share/crossover-gtk/crosshairs',
 ]
 
 # The overlay window is a fixed square; it grows past this only when a large
@@ -463,9 +464,14 @@ X-GNOME-Autostart-enabled=true
 
 def find_crosshair_images():
     images = []
+    seen = set()
     for d in CROSSHAIR_IMAGE_DIRS:
-        if not os.path.isdir(d):
+        # An installed package puts the script in the same prefix as the
+        # system-wide directory, so two entries resolve to one directory.
+        d = os.path.realpath(d)
+        if d in seen or not os.path.isdir(d):
             continue
+        seen.add(d)
         for root, _, files in os.walk(d):
             for f in files:
                 if f.lower().endswith(('.png', '.svg')):

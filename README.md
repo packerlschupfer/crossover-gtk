@@ -144,6 +144,10 @@ Right-click the system tray icon for:
 
 Config is stored at `~/.config/crossover-gtk/config.json`. All settings are also accessible from the tray menu.
 
+### Image library
+
+Drop `.png` or `.svg` crosshairs into `~/.config/crossover-gtk/crosshairs/` (or, system-wide, `/usr/share/crossover-gtk/crosshairs/`) and they appear under **Image Library** in the tray menu, grouped by subdirectory.
+
 ## Why not Electron?
 
 The original [CrossOver](https://github.com/lacymorrow/crossover) is an Electron app that supports Windows, macOS, and Linux. However, on Linux with X11, Electron's transparent window rendering has fundamental issues — DOM changes don't trigger repaints, and workarounds (hide/show, resize) break transparency.
