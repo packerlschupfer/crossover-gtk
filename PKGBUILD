@@ -1,6 +1,6 @@
 # Maintainer: packerlschupfer
 pkgname=crossover-gtk
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Lightweight crosshair overlay for Linux gaming"
 arch=('any')
