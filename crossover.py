@@ -136,6 +136,13 @@ CROSSHAIR_IMAGE_DIRS = [
 # crosshair would otherwise be clipped by its own window (see _sync_window_size).
 BASE_WINDOW_SIZE = 101
 
+# Up to 0.1.1 the window carried no size request, and GTK ignores
+# set_default_size() on a non-resizable window with no child — so the overlay
+# was really 200x200 no matter what window_size said. Saved positions were
+# tuned against that, and need re-anchoring once the window honours its size.
+LEGACY_WINDOW_SIZE = 200
+GEOMETRY_VERSION = 2
+
 DEFAULT_CONFIG = {
     'color': [0.0, 1.0, 0.0, 1.0],
     'outline_color': [0.0, 0.0, 0.0, 0.5],
@@ -253,6 +260,70 @@ def _validate_config(config):
     return config
 
 
+def crosshair_extent(cfg):
+    """Half-width in px of the drawn crosshair, outline and line caps included."""
+    shape = cfg['shape']
+    if shape == 'image':
+        # With no loadable image the draw falls through to the centre dot,
+        # so the window still has to be big enough for it.
+        reach = cfg['image_size'] // 2 + 1
+        if cfg['dot']:
+            reach = max(reach, cfg['dot_size'] + 2)
+        return reach
+    if shape.startswith('pixel'):
+        px = int(shape.split()[1].split('x')[0])
+        return px + 2
+    line_width = cfg['thickness'] + (2 if cfg['outline'] else 0)
+    ext = cfg['size']
+    if 'cross' in shape and ('circle' in shape or 'square' in shape):
+        ext += 4                      # matches the arm length in _draw_crosshair
+    reach = ext + line_width          # LINE_CAP_SQUARE overshoots by lw/2
+    if cfg['dot']:
+        reach = max(reach, cfg['dot_size'] + 1 + line_width)
+    return reach
+
+
+def window_size_for(cfg):
+    """Smallest odd window that draws this crosshair without clipping it."""
+    return max(BASE_WINDOW_SIZE, 2 * crosshair_extent(cfg) + 1)
+
+
+def shift_saved_positions(config, delta):
+    """Move the live origin and every saved profile by delta on both axes."""
+    if not delta:
+        return
+    if config.get('position_x') is not None:
+        config['position_x'] += delta
+        config['position_y'] += delta
+    for p in config.get('profiles', {}).values():
+        p['position_x'] += delta
+        p['position_y'] += delta
+
+
+def _migrate_geometry(config, existing):
+    """Re-anchor positions saved while the window was really LEGACY_WINDOW_SIZE.
+
+    The crosshair is drawn at the centre of the window's *actual* allocation, so
+    a saved origin only means what it did if the window is the same size. Up to
+    0.1.1 that size was always 200 regardless of window_size, which puts every
+    position tuned back then half the difference away from where its owner aimed.
+    """
+    try:
+        version = int(config.pop('geometry_version', 1))
+    except (TypeError, ValueError):
+        version = 1
+    if version >= GEOMETRY_VERSION:
+        config['geometry_version'] = version
+        return False
+    config['geometry_version'] = GEOMETRY_VERSION
+    if not existing:
+        return False        # fresh config — nothing was ever tuned against 200px
+    ws = window_size_for(config)
+    config['window_size'] = ws
+    shift_saved_positions(config, LEGACY_WINDOW_SIZE // 2 - ws // 2)
+    return True
+
+
 def load_config():
     config = dict(DEFAULT_CONFIG)
     try:
@@ -260,13 +331,18 @@ def load_config():
             loaded = json.load(f)
     except (OSError, json.JSONDecodeError):
         loaded = {}
-    if isinstance(loaded, dict):
+    if not isinstance(loaded, dict):
+        loaded = {}
+    if loaded:
         # Pre-0.1 configs called it 'style'
         if 'style' in loaded and 'shape' not in loaded:
             loaded['shape'] = loaded.pop('style')
         loaded.pop('style', None)
         config.update(loaded)
-    return _validate_config(config)
+    _validate_config(config)
+    if _migrate_geometry(config, loaded):
+        save_config(config)
+    return config
 
 
 def save_config(config):
@@ -668,45 +744,20 @@ class CrosshairWindow(Gtk.Window):
                     self.config.get('position_y') or 0)
         return tuple(self.get_position())
 
-    def _crosshair_extent(self):
-        """Half-width in px of the drawn crosshair, outline and line caps included."""
-        cfg = self.config
-        shape = cfg['shape']
-        if shape == 'image':
-            # With no loadable image the draw falls through to the centre dot,
-            # so the window still has to be big enough for it.
-            reach = cfg['image_size'] // 2 + 1
-            if cfg['dot']:
-                reach = max(reach, cfg['dot_size'] + 2)
-            return reach
-        if shape.startswith('pixel'):
-            px = int(shape.split()[1].split('x')[0])
-            return px + 2
-        line_width = cfg['thickness'] + (2 if cfg['outline'] else 0)
-        ext = cfg['size']
-        if 'cross' in shape and ('circle' in shape or 'square' in shape):
-            ext += 4                      # matches the arm length in _draw_crosshair
-        reach = ext + line_width          # LINE_CAP_SQUARE overshoots by lw/2
-        if cfg['dot']:
-            reach = max(reach, cfg['dot_size'] + 1 + line_width)
-        return reach
-
     def _sync_window_size(self, apply=True):
         """Grow the window when the crosshair would outgrow it.
 
         window_size is fixed at BASE_WINDOW_SIZE for ordinary crosshairs; a
-        50px cross needs 107 and was previously drawn clipped. The origin moves
-        by half the growth so the crosshair centre stays on the same pixel.
+        50px cross needs 107 and was previously drawn clipped. Every saved
+        origin moves by half the growth so its crosshair centre stays on the
+        same pixel — profiles included, or loading one would shift your aim.
         """
-        ws = max(BASE_WINDOW_SIZE, 2 * self._crosshair_extent() + 1)
+        ws = window_size_for(self.config)
         old = self.config.get('window_size') or BASE_WINDOW_SIZE
         if ws == old:
             return False
-        delta = (ws - old) // 2
         self.config['window_size'] = ws
-        if self.config.get('position_x') is not None:
-            self.config['position_x'] -= delta
-            self.config['position_y'] -= delta
+        shift_saved_positions(self.config, (old - ws) // 2)
         if apply:
             self.set_size_request(ws, ws)
             self.resize(ws, ws)
