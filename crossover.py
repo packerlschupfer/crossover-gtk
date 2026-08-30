@@ -141,7 +141,7 @@ BASE_WINDOW_SIZE = 101
 # was really 200x200 no matter what window_size said. Saved positions were
 # tuned against that, and need re-anchoring once the window honours its size.
 LEGACY_WINDOW_SIZE = 200
-GEOMETRY_VERSION = 2
+GEOMETRY_VERSION = 3
 
 DEFAULT_CONFIG = {
     'color': [0.0, 1.0, 0.0, 1.0],
@@ -220,6 +220,8 @@ def _validate_config(config):
         except (TypeError, ValueError):
             config[key] = DEFAULT_CONFIG[key]
 
+    config['dot_size'] = max(1, min(10, config['dot_size']))
+
     for key in ('outline', 'dot', 'autostart'):
         config[key] = bool(config.get(key))
 
@@ -260,6 +262,12 @@ def _validate_config(config):
     return config
 
 
+def dot_extent(cfg):
+    """Half-width in px of the centre dot, its outline included."""
+    side = cfg['dot_size'] + (2 if cfg['outline'] else 0)
+    return (side + 1) // 2 + 1
+
+
 def crosshair_extent(cfg):
     """Half-width in px of the drawn crosshair, outline and line caps included."""
     shape = cfg['shape']
@@ -268,7 +276,7 @@ def crosshair_extent(cfg):
         # so the window still has to be big enough for it.
         reach = cfg['image_size'] // 2 + 1
         if cfg['dot']:
-            reach = max(reach, cfg['dot_size'] + 2)
+            reach = max(reach, dot_extent(cfg))
         return reach
     if shape.startswith('pixel'):
         px = int(shape.split()[1].split('x')[0])
@@ -279,7 +287,7 @@ def crosshair_extent(cfg):
         ext += 4                      # matches the arm length in _draw_crosshair
     reach = ext + line_width          # LINE_CAP_SQUARE overshoots by lw/2
     if cfg['dot']:
-        reach = max(reach, cfg['dot_size'] + 1 + line_width)
+        reach = max(reach, dot_extent(cfg))
     return reach
 
 
@@ -318,9 +326,18 @@ def _migrate_geometry(config, existing):
     config['geometry_version'] = GEOMETRY_VERSION
     if not existing:
         return False        # fresh config — nothing was ever tuned against 200px
-    ws = window_size_for(config)
-    config['window_size'] = ws
-    shift_saved_positions(config, LEGACY_WINDOW_SIZE // 2 - ws // 2)
+
+    # Ordered oldest first, and the dot before the window: window_size_for()
+    # reads dot_size, so it has to see the new meaning.
+    if version < 3:
+        # dot_size used to be a half-width — 2 drew a 4px dot, and an odd size
+        # was unreachable. It is now the side in px, so double it to leave the
+        # dot looking exactly as it did.
+        config['dot_size'] = max(1, config['dot_size'] * 2)
+    if version < 2:
+        ws = window_size_for(config)
+        config['window_size'] = ws
+        shift_saved_positions(config, LEGACY_WINDOW_SIZE // 2 - ws // 2)
     return True
 
 
@@ -919,14 +936,16 @@ class CrosshairWindow(Gtk.Window):
                 cr.rectangle(cx - size, cy - size, size * 2, size * 2)
                 cr.stroke()
 
-            # Center dot. This is a fill, not a stroke: its edges land where the
-            # path says, and a side of 2*ds is always even — so it wants the
-            # pixel boundary regardless of the current line width's parity.
+            # Center dot. A fill, not a stroke, so its edges land exactly where
+            # the path says — but it needs the same parity rule: an odd side
+            # wants the pixel centre, an even one the boundary. dot_size is the
+            # side in px, so a 1px dot really is one pixel.
             if cfg['dot']:
                 cr.new_path()
-                ds = cfg['dot_size'] + 1 if is_outline else cfg['dot_size']
-                dx, dy = base_cx - 0.5, base_cy - 0.5
-                cr.rectangle(dx - ds, dy - ds, ds * 2, ds * 2)
+                side = cfg['dot_size'] + (2 if is_outline else 0)
+                dx = base_cx if side % 2 else base_cx - 0.5
+                dy = base_cy if side % 2 else base_cy - 0.5
+                cr.rectangle(dx - side / 2, dy - side / 2, side, side)
                 cr.fill()
 
     def toggle_lock(self):
@@ -951,6 +970,12 @@ class CrosshairWindow(Gtk.Window):
 
     def set_dot(self, enabled):
         self.config['dot'] = enabled
+        self._sync_window_size()
+        save_config(self.config)
+        self.queue_draw()
+
+    def set_dot_size(self, size):
+        self.config['dot_size'] = max(1, min(10, size))
         self._sync_window_size()
         save_config(self.config)
         self.queue_draw()
@@ -1101,6 +1126,17 @@ class TrayIcon:
         dot_item.set_active(self.app.config.get('dot', False))
         dot_item.connect('toggled', lambda w: self.app.window.set_dot(w.get_active()))
         menu.append(dot_item)
+
+        # Dot size
+        dot_size_item = Gtk.MenuItem(label=f'Dot size ({self.app.config["dot_size"]}px)')
+        dot_size_menu = Gtk.Menu()
+        for d in [1, 2, 3, 4, 5, 6, 8, 10]:
+            ds_item = Gtk.CheckMenuItem(label=f'{d}px')
+            ds_item.set_active(self.app.config['dot_size'] == d)
+            ds_item.connect('activate', self._on_dot_size_change, d)
+            dot_size_menu.append(ds_item)
+        dot_size_item.set_submenu(dot_size_menu)
+        menu.append(dot_size_item)
 
         # Size
         size_item = Gtk.MenuItem(label=f'Size ({self.app.config["size"]}px)')
@@ -1266,6 +1302,11 @@ class TrayIcon:
     def _on_gap_change(self, widget, gap):
         if widget.get_active():
             self.app.window.set_gap(gap)
+            self.indicator.set_menu(self._build_menu())
+
+    def _on_dot_size_change(self, widget, size):
+        if widget.get_active():
+            self.app.window.set_dot_size(size)
             self.indicator.set_menu(self._build_menu())
 
     def _on_show_help(self, widget):
