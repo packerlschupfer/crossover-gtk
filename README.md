@@ -5,9 +5,9 @@ A lightweight crosshair overlay for Linux (X11 + Wayland). Built with GTK3 and C
 Designed for FPS games (CS2, Valorant, etc.) where you need a persistent crosshair overlay.
 
 <p align="center">
-  <img src="screenshots/overlay-unlocked.png" alt="Overlay window (unlocked)" height="220">
+  <img src="screenshots/overlay-unlocked.png" alt="Overlay window (unlocked)" height="181">
   &nbsp;&nbsp;
-  <img src="screenshots/overlay-locked.png" alt="Overlay (locked — click-through)" height="220">
+  <img src="screenshots/overlay-locked.png" alt="Overlay (locked — click-through)" height="181">
   &nbsp;&nbsp;
   <img src="screenshots/tray-menu.png" alt="Tray menu" height="420">
 </p>
