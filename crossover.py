@@ -837,9 +837,10 @@ class CrosshairWindow(Gtk.Window):
         cr.move_to((w - ext.width) / 2, 12)
         cr.show_text('Ctrl+Shift+Alt+X to lock')
 
-    def _draw_crosshair(self, cr, cx, cy):
+    def _draw_crosshair(self, cr, base_cx, base_cy):
         cfg = self.config
         shape = cfg['shape']
+        cx, cy = base_cx, base_cy
 
         # Image mode
         if shape == 'image' and self.custom_image_pixbuf:
@@ -875,12 +876,21 @@ class CrosshairWindow(Gtk.Window):
         for is_outline in ([True, False] if cfg['outline'] else [False]):
             if is_outline:
                 cr.set_source_rgba(*cfg['outline_color'])
-                cr.set_line_width(thickness + 2)
+                line_width = thickness + 2
             else:
                 cr.set_source_rgba(*color)
-                cr.set_line_width(thickness)
+                line_width = thickness
+            cr.set_line_width(line_width)
             cr.set_line_cap(cairo.LINE_CAP_SQUARE)
             cr.set_line_join(cairo.LINE_JOIN_MITER)
+
+            # Cairo centres a stroke on its path, so where the path has to sit
+            # depends on the parity of the width: an odd line wants a pixel
+            # centre (x.5), an even one a pixel boundary. Feeding both the same
+            # x.5 leaves every even thickness half-covering an extra pixel on
+            # each side — a 3px smear instead of a crisp 2px line.
+            cx, cy = (base_cx, base_cy) if line_width % 2 else (base_cx - 0.5,
+                                                                base_cy - 0.5)
 
             # Cross lines
             if 'cross' in shape:
@@ -909,11 +919,14 @@ class CrosshairWindow(Gtk.Window):
                 cr.rectangle(cx - size, cy - size, size * 2, size * 2)
                 cr.stroke()
 
-            # Center dot
+            # Center dot. This is a fill, not a stroke: its edges land where the
+            # path says, and a side of 2*ds is always even — so it wants the
+            # pixel boundary regardless of the current line width's parity.
             if cfg['dot']:
                 cr.new_path()
                 ds = cfg['dot_size'] + 1 if is_outline else cfg['dot_size']
-                cr.rectangle(cx - ds, cy - ds, ds * 2, ds * 2)
+                dx, dy = base_cx - 0.5, base_cy - 0.5
+                cr.rectangle(dx - ds, dy - ds, ds * 2, ds * 2)
                 cr.fill()
 
     def toggle_lock(self):
